@@ -1,0 +1,10 @@
+[90m= [39m[34;4mApp\Models\User[39;24m {#7070
+    [34mname[39m: "[32mJohn Driver[39m",
+    [34memail[39m: "[32mjohhny.user@example.com[39m",
+    #[33mpassword[39m: "[32m$2y$12$fzfHff3jI6l1FoWqO9FcsOS5PypOEHyIYBSIZ0KS8ygO.4.pFAN4m[39m",
+    [34mdriver_id[39m: [36mnull[39m,
+    [34mupdated_at[39m: "[32m2025-06-06 03:36:48[39m",
+    [34mcreated_at[39m: "[32m2025-06-06 03:36:48[39m",
+    [34mid[39m: [35m8[39m,
+  }
+
