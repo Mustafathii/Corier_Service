@@ -5,6 +5,8 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+
 
 class Shipment extends Model
 {
@@ -67,6 +69,10 @@ class Shipment extends Model
     public function createdBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+     public function histories(): HasMany
+    {
+        return $this->hasMany(ShipmentHistory::class)->orderByDesc('created_at');
     }
 
     // Accessors
@@ -197,29 +203,54 @@ class Shipment extends Model
     }
 
     // Boot method for auto-generating tracking number
-    protected static function boot()
+     protected static function boot()
     {
         parent::boot();
 
-        static::creating(function ($shipment) {
-            if (empty($shipment->tracking_number)) {
-                $shipment->tracking_number = 'TRK' . strtoupper(\Illuminate\Support\Str::random(10));
-            }
+        static::created(function ($shipment) {
+            ShipmentHistory::log(
+                $shipment->id,
+                'created',
+                'Shipment created with tracking number: ' . $shipment->tracking_number
+            );
+        });
 
-            // If using existing seller, populate sender fields from seller data
-            if ($shipment->is_existing_seller && $shipment->seller_id) {
-                $seller = User::find($shipment->seller_id);
-                if ($seller) {
-                    $shipment->sender_name = $seller->name;
-                    $shipment->sender_phone = $seller->phone ?? 'N/A';
-                    $shipment->sender_address = $seller->address ?? 'N/A';
-                    $shipment->sender_city = 'N/A'; // You might want to add city to users table
+        static::updating(function ($shipment) {
+            $changes = $shipment->getDirty();
+
+            foreach ($changes as $field => $newValue) {
+                $oldValue = $shipment->getOriginal($field);
+
+                if ($field === 'status') {
+                    ShipmentHistory::log(
+                        $shipment->id,
+                        'status_changed',
+                        "Status changed from '{$oldValue}' to '{$newValue}'",
+                        $oldValue,
+                        $newValue
+                    );
+                } elseif ($field === 'driver_id') {
+                    $oldDriver = $oldValue ? User::find($oldValue)?->name : 'Unassigned';
+                    $newDriver = $newValue ? User::find($newValue)?->name : 'Unassigned';
+
+                    ShipmentHistory::log(
+                        $shipment->id,
+                        'driver_assigned',
+                        "Driver changed from '{$oldDriver}' to '{$newDriver}'",
+                        $oldDriver,
+                        $newDriver
+                    );
+                } else {
+                    ShipmentHistory::log(
+                        $shipment->id,
+                        'field_updated',
+                        "Field '{$field}' updated from '{$oldValue}' to '{$newValue}'",
+                        $oldValue,
+                        $newValue
+                    );
                 }
-            }
-
-            if (auth()->check()) {
-                $shipment->created_by = auth()->id();
             }
         });
     }
+
 }

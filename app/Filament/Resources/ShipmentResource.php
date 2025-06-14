@@ -34,7 +34,6 @@ class ShipmentResource extends Resource
         $query = parent::getEloquentQuery();
         $user = auth()->user();
 
-        // Eager load relationships for better performance
         $query->with(['seller', 'driver']);
 
         if ($user->hasRole('Driver')) {
@@ -92,7 +91,6 @@ class ShipmentResource extends Resource
             ->schema([
                 Forms\Components\Section::make('Shipment Details')
                     ->schema([
-                        // Toggle for Seller/New Client
                         Forms\Components\Toggle::make('is_existing_seller')
                             ->label('Client Type')
                             ->helperText('Toggle Right for Existing Seller, Left for New Client')
@@ -104,7 +102,6 @@ class ShipmentResource extends Resource
                                 }
                             }),
 
-                        // Seller Dropdown (shown when toggle is right/true)
                         Forms\Components\Select::make('seller_id')
                             ->label('Select Seller Company')
                             ->relationship(
@@ -123,7 +120,6 @@ class ShipmentResource extends Resource
                             ->visible(fn (Get $get) => $get('is_existing_seller'))
                             ->placeholder('Select seller company'),
 
-                        // New Client Fields (shown when toggle is left/false)
                         Forms\Components\TextInput::make('sender_name')
                             ->label('Sender Name')
                             ->required(fn (Get $get) => !$get('is_existing_seller'))
@@ -149,10 +145,9 @@ class ShipmentResource extends Resource
                             ->visible(fn (Get $get) => !$get('is_existing_seller'))
                             ->maxLength(255),
 
-                        // Auto-generated tracking number with barcode
                         Forms\Components\TextInput::make('tracking_number')
                             ->label('Tracking Number')
-                            ->default(fn() => 'TRK' . strtoupper(\Illuminate\Support\Str::random(10)))
+                            ->default(fn() => 'DP-' . date('Y') . str_pad(mt_rand(1, 99999999), 7, '0', STR_PAD_LEFT))
                             ->disabled()
                             ->dehydrated()
                             ->unique(ignoreRecord: true)
@@ -161,10 +156,6 @@ class ShipmentResource extends Resource
                                     ->icon('heroicon-m-qr-code')
                                     ->tooltip('Generate Barcode')
                                     ->action(function (Set $set, Get $get) {
-                                        // You can implement barcode generation here
-                                        // For now, we'll just show the tracking number
-                                        $trackingNumber = $get('tracking_number');
-                                        // Add your barcode generation logic
                                     })
                             ),
                     ])
@@ -220,7 +211,6 @@ class ShipmentResource extends Resource
                             ->default('standard')
                             ->live()
                             ->afterStateUpdated(function (Set $set, $state) {
-                                // Auto-calculate shipping cost based on type
                                 $costs = [
                                     'express' => 25.00,
                                     'standard' => 15.00,
@@ -241,7 +231,7 @@ class ShipmentResource extends Resource
                                 'canceled' => 'Canceled',
                             ])
                             ->required()
-                            ->default('pending')
+                            ->default('in_transit')
                             ->disabled(fn () => !$user->can('update_shipment_status')),
                     ])
                     ->columns(3),
@@ -270,7 +260,6 @@ class ShipmentResource extends Resource
                         Forms\Components\TextInput::make('declared_value')
                             ->label('Declared Value')
                             ->numeric()
-                            ->prefix('$')
                             ->step(0.01)
                             ->minValue(0)
                             ->placeholder('Optional - for insurance purposes'),
@@ -300,14 +289,14 @@ class ShipmentResource extends Resource
                             ->label('Shipping Cost')
                             ->numeric()
                             ->required()
-                            ->prefix('$')
+                            ->prefix('E£')
                             ->step(0.01)
                             ->minValue(0),
 
                         Forms\Components\TextInput::make('cod_amount')
                             ->label('COD Amount')
                             ->numeric()
-                            ->prefix('$')
+                            ->prefix('E£')
                             ->step(0.01)
                             ->minValue(0)
                             ->required(fn (Get $get) => $get('payment_method') === 'cod')
@@ -385,6 +374,11 @@ class ShipmentResource extends Resource
                     ->searchable()
                     ->sortable(),
 
+                Tables\Columns\TextColumn::make('receiver_phone')
+                    ->label('Receiver Phone')
+                    ->searchable()
+                    ->sortable(),
+
                 Tables\Columns\TextColumn::make('receiver_city')
                     ->label('City')
                     ->searchable()
@@ -428,7 +422,7 @@ class ShipmentResource extends Resource
 
                 Tables\Columns\TextColumn::make('cod_amount')
                     ->label('COD')
-                    ->money('USD')
+                    ->money('EGP')
                     ->placeholder('N/A'),
 
                 Tables\Columns\TextColumn::make('driver.name')
@@ -515,15 +509,93 @@ class ShipmentResource extends Resource
                             );
                     }),
             ])
-            ->actions([
-                Tables\Actions\Action::make('viewBarcode')
-                    ->label('Barcode')
-                    ->icon('heroicon-m-qr-code')
-                    ->action(function ($record) {
-                        // Implement barcode viewing logic
-                        // You can open a modal or redirect to barcode view
+            ->headerActions([
+                Tables\Actions\Action::make('export')
+                    ->label('Export to Excel')
+                    ->icon('heroicon-o-arrow-down-tray')
+                    ->color('success')
+                    ->action(function ($livewire) {
+                        $query = $livewire->getFilteredTableQuery();
+                        $records = $query->with(['seller', 'driver'])->get();
+                        $filename = 'shipments_export_' . now()->format('Y-m-d_H-i-s') . '.xlsx';
+
+                        return \Maatwebsite\Excel\Facades\Excel::download(
+                            new \App\Exports\ShipmentsExport($records),
+                            $filename
+                        );
                     })
-                    ->button(),
+                    ->requiresConfirmation()
+                    ->modalHeading('Export Shipments')
+                    ->modalDescription('This will export all currently filtered shipments to an Excel file.')
+                    ->modalSubmitActionLabel('Download Excel'),
+
+                Tables\Actions\Action::make('import')
+                    ->label('Import from Excel')
+                    ->icon('heroicon-o-arrow-up-tray')
+                    ->color('primary')
+                    ->form([
+                        Forms\Components\FileUpload::make('excel_file')
+                            ->label('Upload Excel File (.xlsx, .xls, .csv)')
+                            ->acceptedFileTypes(['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel', 'text/csv'])
+                            ->required()
+                            ->columnSpanFull(),
+                    ])
+                    ->action(function (array $data) {
+                        try {
+                            \Maatwebsite\Excel\Facades\Excel::import(new \App\Imports\ShipmentsImport, $data['excel_file']);
+
+                            \Filament\Notifications\Notification::make()
+                                ->title('Import successful')
+                                ->body('Shipments have been imported successfully.')
+                                ->success()
+                                ->send();
+                        } catch (\Maatwebsite\Excel\Validators\ValidationException $e) {
+                            $failures = $e->failures();
+                            $errorMessage = 'Import failed. Some rows have validation errors:';
+                            foreach ($failures as $failure) {
+                                $errorMessage .= '<br>Row ' . $failure->row() . ': ' . implode(', ', $failure->errors());
+                            }
+
+                            \Filament\Notifications\Notification::make()
+                                ->title('Import failed')
+                                ->body($errorMessage)
+                                ->danger()
+                                ->persistent()
+                                ->send();
+                        } catch (\Exception $e) {
+                            \Filament\Notifications\Notification::make()
+                                ->title('Import failed')
+                                ->body('An error occurred during import: ' . $e->getMessage())
+                                ->danger()
+                                ->persistent()
+                                ->send();
+                        }
+                    })
+                    ->modalHeading('Import Shipments')
+                    ->modalDescription('Upload an Excel file (.xlsx, .xls, .csv) to import shipments.')
+                    ->modalSubmitActionLabel('Import')
+            ])
+
+           ->actions([
+    Tables\Actions\Action::make('printBillOfLading')
+        ->label('Print')
+        ->icon('heroicon-m-document-text')
+        ->url(fn (Shipment $record): string => route('bill-of-lading.generate', $record->id))
+        ->openUrlInNewTab()
+        ->button()
+        ->color('primary'),
+
+    Tables\Actions\Action::make('viewHistory')
+        ->label('History')
+        ->icon('heroicon-m-clock')
+        ->color('info')
+        ->modalHeading(fn (Shipment $record) => 'History for ' . $record->tracking_number)
+        ->modalContent(fn (Shipment $record) => view('filament.modals.shipment-history', [
+            'shipment' => $record,
+            'histories' => $record->histories()->with('user')->get()
+        ]))
+        ->modalWidth('4xl')
+        ->button(),
 
                 Tables\Actions\EditAction::make()
                     ->visible(fn () => auth()->user()->can('edit_shipments')),
@@ -532,110 +604,153 @@ class ShipmentResource extends Resource
                     ->visible(fn () => auth()->user()->can('delete_shipments')),
             ])
             ->bulkActions([
-                Tables\Actions\BulkActionGroup::make([
-                    Tables\Actions\DeleteBulkAction::make()
-                        ->visible(fn () => auth()->user()->can('delete_shipments')),
 
-                    Tables\Actions\BulkAction::make('assignDriver')
-                        ->label('Assign Driver')
-                        ->icon('heroicon-m-user-plus')
-                        ->color('success')
-                        ->form([
-                            Forms\Components\Select::make('driver_id')
-                                ->label('Select Driver')
-                                ->options(function () {
-                                    return \App\Models\User::whereHas('roles', function ($q) {
-                                        $q->where('name', 'Driver');
-                                    })->where('is_active', true)->pluck('name', 'id');
-                                })
-                                ->searchable()
-                                ->required()
-                                ->placeholder('Choose a driver'),
+                Tables\Actions\BulkAction::make('generateBills')
+    ->label('Print Shipments')
+    ->icon('heroicon-o-document-text')
+    ->color('primary')
+    ->outlined()
+    ->action(function (\Illuminate\Database\Eloquent\Collection $records) {
+        // Load relationships
+        $shipments = $records->load(['seller', 'driver']);
 
-                            Forms\Components\Select::make('status')
-                                ->label('Update Status To')
-                                ->options([
-                                    'pending' => 'Keep as Pending',
-                                    'in_transit' => 'Set to In Transit',
-                                ])
-                                ->default('pending')
-                                ->required(),
-                        ])
-                        ->action(function (array $data, $records) {
-                            $records->each(function ($record) use ($data) {
-                                $record->update([
-                                    'driver_id' => $data['driver_id'],
-                                    'status' => $data['status']
-                                ]);
-                            });
+        if (count($shipments) === 1) {
+            // Single shipment - generate and download directly
+            return response()->streamDownload(function () use ($shipments) {
+                $shipment = $shipments->first();
+                $billContent = \App\Http\Controllers\BillOfLadingController::generateBillContent($shipment);
+                echo $billContent;
+            }, 'Bill_of_Lading_' . $shipments->first()->tracking_number . '_' . now()->format('Y-m-d') . '.docx');
+        } else {
+            // Multiple shipments - create ONE Word document with all bills
+            return response()->streamDownload(function () use ($shipments) {
+                $billContent = \App\Http\Controllers\BillOfLadingController::generateMultipleBillsContent($shipments);
+                echo $billContent;
+            }, 'Bills_of_Lading_' . count($shipments) . '_shipments_' . now()->format('Y-m-d_H-i-s') . '.docx');
+        }
+    })
+    ->requiresConfirmation()
+    ->deselectRecordsAfterCompletion(),
 
-                            \Filament\Notifications\Notification::make()
-                                ->title('Shipments Assigned Successfully')
-                                ->body(count($records) . ' shipments have been assigned to the selected driver.')
-                                ->success()
-                                ->send();
-                        })
-                        ->visible(fn () => auth()->user()->can('assign_shipments'))
-                        ->requiresConfirmation()
-                        ->modalHeading('Assign Shipments to Driver')
-                        ->modalDescription('Select a driver to assign the selected shipments to.')
-                        ->modalSubmitActionLabel('Assign Shipments'),
 
-                    Tables\Actions\BulkAction::make('updateStatus')
-                        ->label('Update Status')
-                        ->icon('heroicon-m-arrow-path')
-                        ->color('warning')
-                        ->form([
-                            Forms\Components\Select::make('status')
-                                ->options([
-                                    'pending' => 'Pending',
-                                    'picked_up' => 'Picked Up',
-                                    'in_transit' => 'In Transit',
-                                    'out_for_delivery' => 'Out for Delivery',
-                                    'delivered' => 'Delivered',
-                                    'failed_delivery' => 'Failed Delivery',
-                                    'returned' => 'Returned',
-                                    'canceled' => 'Canceled',
-                                ])
-                                ->required(),
-                        ])
-                        ->action(function (array $data, $records) {
-                            $records->each(function ($record) use ($data) {
-                                $record->update(['status' => $data['status']]);
-                            });
+                // Export Selected - Side by side
+                Tables\Actions\BulkAction::make('exportSelected')
+                    ->label('Export Selected')
+                    ->icon('heroicon-o-arrow-down-tray')
+                    ->color('success')
+                    ->outlined()
+                    ->action(function ($records) {
+                        $filename = 'selected_shipments_' . now()->format('Y-m-d_H-i-s') . '.xlsx';
+                        return \Maatwebsite\Excel\Facades\Excel::download(
+                            new \App\Exports\ShipmentsExport($records),
+                            $filename
+                        );
+                    })
+                    ->requiresConfirmation()
+                    ->modalHeading('Export Selected Shipments')
+                    ->modalDescription('Export only the selected shipments to Excel.')
+                    ->modalSubmitActionLabel('Download Excel'),
 
-                            \Filament\Notifications\Notification::make()
-                                ->title('Status Updated Successfully')
-                                ->body(count($records) . ' shipments status updated to ' . $data['status'])
-                                ->success()
-                                ->send();
-                        })
-                        ->visible(fn () => auth()->user()->can('update_shipment_status'))
-                        ->requiresConfirmation(),
+                // Delete Selected - Side by side
+                Tables\Actions\DeleteBulkAction::make()
+                    ->outlined()
+                    ->visible(fn () => auth()->user()?->can('delete_shipments') ?? false),
+                // Assign Driver - Side by side
+                Tables\Actions\BulkAction::make('assignDriver')
+                    ->label('Assign Driver')
+                    ->icon('heroicon-m-user-plus')
+                    ->color('success')
+                    ->outlined()
+                    ->form([
+                        Forms\Components\Select::make('driver_id')
+                            ->label('Select Driver')
+                            ->options(function () {
+                                return \App\Models\User::whereHas('roles', function ($q) {
+                                    $q->where('name', 'Driver');
+                                })->where('is_active', true)->pluck('name', 'id');
+                            })
+                            ->searchable()
+                            ->required()
+                            ->placeholder('Choose a driver'),
+                    ])
+                ->action(function (array $data, $records) {
+                    $records->each(function ($record) use ($data) {
+                        $record->update([
+                            'driver_id' => $data['driver_id'],
+                            'status' => 'out_for_delivery' // Automatically set to "Out for Delivery"
+                        ]);
+                    });
 
-                    Tables\Actions\BulkAction::make('unassignDriver')
-                        ->label('Unassign Driver')
-                        ->icon('heroicon-m-user-minus')
-                        ->color('danger')
-                        ->action(function ($records) {
-                            $records->each(function ($record) {
-                                $record->update([
-                                    'driver_id' => null,
-                                    'status' => 'pending'
-                                ]);
-                            });
+                    \Filament\Notifications\Notification::make()
+                        ->title('Shipments Assigned Successfully')
+                        ->body(count($records) . ' shipments have been assigned to the selected driver.')
+                        ->success()
+                        ->send();
+                })
+                    ->visible(fn () => auth()->user()?->can('assign_shipments') ?? false)
+                    ->requiresConfirmation()
+                    ->modalHeading('Assign Shipments to Driver')
+                    ->modalDescription('Select a driver to assign the selected shipments to.')
+                    ->modalSubmitActionLabel('Assign Shipments'),
 
-                            \Filament\Notifications\Notification::make()
-                                ->title('Drivers Unassigned')
-                                ->body(count($records) . ' shipments have been unassigned and set to pending.')
-                                ->success()
-                                ->send();
-                        })
-                        ->visible(fn () => auth()->user()->can('assign_shipments'))
-                        ->requiresConfirmation()
-                        ->modalHeading('Unassign Drivers')
-                        ->modalDescription('This will remove driver assignments and set status to pending.'),
-                ]),
+                // Update Status - Side by side
+                Tables\Actions\BulkAction::make('updateStatus')
+                    ->label('Update Status')
+                    ->icon('heroicon-m-arrow-path')
+                    ->color('warning')
+                    ->outlined()
+                    ->form([
+                        Forms\Components\Select::make('status')
+                            ->options([
+                                'pending' => 'Pending',
+                                'picked_up' => 'Picked Up',
+                                'in_transit' => 'In Transit',
+                                'out_for_delivery' => 'Out for Delivery',
+                                'delivered' => 'Delivered',
+                                'failed_delivery' => 'Failed Delivery',
+                                'returned' => 'Returned',
+                                'canceled' => 'Canceled',
+                            ])
+                            ->required(),
+                    ])
+                    ->action(function (array $data, $records) {
+                        $records->each(function ($record) use ($data) {
+                            $record->update(['status' => $data['status']]);
+                        });
+
+                        \Filament\Notifications\Notification::make()
+                            ->title('Status Updated Successfully')
+                            ->body(count($records) . ' shipments status updated to ' . $data['status'])
+                            ->success()
+                            ->send();
+                    })
+                    ->visible(fn () => auth()->user()?->can('update_shipment_status') ?? false)
+                    ->requiresConfirmation(),
+
+                // Unassign Driver - Side by side
+                Tables\Actions\BulkAction::make('unassignDriver')
+                    ->label('Unassign Driver')
+                    ->icon('heroicon-m-user-minus')
+                    ->color('danger')
+                    ->outlined()
+                    ->action(function ($records) {
+                        $records->each(function ($record) {
+                            $record->update([
+                                'driver_id' => null,
+                                'status' => 'pending'
+                            ]);
+                        });
+
+                        \Filament\Notifications\Notification::make()
+                            ->title('Drivers Unassigned')
+                            ->body(count($records) . ' shipments have been unassigned and set to pending.')
+                            ->success()
+                            ->send();
+                    })
+                    ->visible(fn () => auth()->user()?->can('assign_shipments') ?? false)
+                    ->requiresConfirmation()
+                    ->modalHeading('Unassign Drivers')
+                    ->modalDescription('This will remove driver assignments and set status to pending.'),
             ])
             ->defaultSort('created_at', 'desc');
     }

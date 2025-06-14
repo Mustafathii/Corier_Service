@@ -28,7 +28,7 @@ class AdminPanelProvider extends PanelProvider
             ->path('admin')
             ->login()
             ->colors([
-                'primary' => Color::Amber,
+                'primary' => Color::Blue,
             ])
             ->discoverResources(in: app_path('Filament/Resources'), for: 'App\\Filament\\Resources')
             ->discoverPages(in: app_path('Filament/Pages'), for: 'App\\Filament\\Pages')
@@ -38,8 +38,10 @@ class AdminPanelProvider extends PanelProvider
             ->discoverWidgets(in: app_path('Filament/Widgets'), for: 'App\\Filament\\Widgets')
             ->widgets([
                 // Add your custom widgets here
-                \App\Filament\Widgets\RecentShipments::class,
                 \App\Filament\Widgets\StatsOverview::class,
+                \App\Filament\Widgets\DriverPerformanceWidget::class,
+                \App\Filament\Widgets\RevenueAnalyticsWidget::class,
+                \App\Filament\Widgets\CityDistributionWidget::class,
                 // Widgets\AccountWidget::class, // Comment out or remove default widgets if not needed
                 // Widgets\FilamentInfoWidget::class,
             ])
