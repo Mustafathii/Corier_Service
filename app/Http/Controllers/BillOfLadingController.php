@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Shipment;
+use App\Services\BarcodeService;
 use Illuminate\Http\Request;
 use PhpOffice\PhpWord\PhpWord;
 use PhpOffice\PhpWord\IOFactory;
@@ -70,9 +71,9 @@ class BillOfLadingController extends Controller
         foreach ($shipments as $shipment) {
             // Add space between bills (except for the first one)
             if (!$isFirstBill) {
-                $section->addTextBreak(3); // Add space between bills
-                $section->addText('─────────────────────────────────────────────────────────────────',
-                    ['name' => 'Arial', 'size' => 5, 'color' => 'CCCCCC'],
+                $section->addTextBreak(1); // Add space between bills
+                $section->addText('──────────────────────────────',
+                    ['name' => 'Arial', 'size' => 3, 'color' => 'CCCCCC'],
                     ['alignment' => 'center']); // Add separator line
                 $section->addTextBreak(1);
             } else {
@@ -137,15 +138,58 @@ class BillOfLadingController extends Controller
         $dataStyle = ['name' => 'Arial', 'size' => 10];
         $smallTextStyle = ['name' => 'Arial', 'size' => 7];
 
-        // Header Section - Company name and title
+        // Header Section - Company name, date, and BARCODE in top right
         $headerTable = $section->addTable(['borderSize' => 0]);
         $headerTable->addRow();
-        $headerTable->addCell(6000)->addText('DP Shipping Company', $companyStyle);
-        $headerTable->addCell(2000)->addText('Date: ' . now()->format('m/d/Y'), $dataStyle, ['alignment' => 'right']);
+
+        // Company name cell (left)
+        $companyCell = $headerTable->addCell(4000);
+        $companyCell->addText('DP Shipping Company', $companyStyle);
+
+        // Date cell (center)
+        $dateCell = $headerTable->addCell(3000);
+        $dateCell->addText('Date: ' . now()->format('m/d/Y'), $dataStyle, ['alignment' => 'center']);
+
+        // Barcode cell (top right) - NEW ADDITION
+        $barcodeCell = $headerTable->addCell(4000 , [
+            'borderTopSize' => 0,
+            'borderLeftSize' => 0,
+            'borderRightSize' => 0,
+            'borderBottomSize' => 0
+        ]);
+        if ($shipment->barcode_svg) {
+            try {
+                // Convert SVG barcode to temporary PNG file for Word document
+                $tempBarcodeFile = self::convertSvgBarcodeToPng($shipment->barcode_svg, $shipment->tracking_number);
+
+                if ($tempBarcodeFile && file_exists($tempBarcodeFile)) {
+                    $barcodeCell->addImage(
+                        $tempBarcodeFile,
+                        [
+                            'width' => 180,
+                            'height' => 40,
+                            'alignment' => 'center',
+                        ]
+                    );
+                    $barcodeCell->addText('Barcode Reference', $smallTextStyle, ['alignment' => 'center']);
+
+                    // Clean up temp file immediately
+                        // unlink($tempBarcodeFile);
+                } else {
+                    $barcodeCell->addText('Tracking: ' . $shipment->tracking_number, $smallTextStyle, ['alignment' => 'right']);
+                }
+            } catch (\Exception $e) {
+                // If barcode conversion fails, just show tracking number
+                $barcodeCell->addText('Tracking: ' . $shipment->tracking_number, $smallTextStyle, ['alignment' => 'right']);
+            }
+        } else {
+            // If no barcode, just show tracking number
+            $barcodeCell->addText('Tracking: ' . $shipment->tracking_number, $smallTextStyle, ['alignment' => 'right']);
+        }
 
         $section->addTextBreak(1);
 
-        // Top section with shipper and consignee
+        // Top section with shipper and consignee (UNCHANGED)
         $topTable = $section->addTable([
             'borderSize' => 12,
             'borderColor' => '000000',
@@ -196,7 +240,7 @@ class BillOfLadingController extends Controller
 
         $section->addTextBreak(0.5);
 
-        // Billing and service information
+        // Billing and service information (UNCHANGED)
         $billingTable = $section->addTable([
             'borderSize' => 12,
             'borderColor' => '000000',
@@ -234,6 +278,7 @@ class BillOfLadingController extends Controller
 
         $section->addTextBreak(0.5);
 
+        // ALL REMAINING CODE STAYS EXACTLY THE SAME...
         // Main shipment details table
         $detailsTable = $section->addTable([
             'borderSize' => 12,
@@ -321,8 +366,90 @@ class BillOfLadingController extends Controller
         $specialCell->addText($shipment->notes ?? '', $smallTextStyle);
 
         $section->addTextBreak(0.5);
+    }
 
+    /**
+     * FIXED METHOD: Convert SVG barcode to PNG for Word documents with DEBUG
+     */
+    private static function convertSvgBarcodeToPng(string $svgContent, string $trackingNumber): ?string
+    {
+        try {
+            // Add debug logging
+            \Log::info("=== BARCODE DEBUG START ===");
+            \Log::info("Tracking: {$trackingNumber}");
+            \Log::info("SVG Content Length: " . strlen($svgContent));
+            \Log::info("SVG Preview: " . substr($svgContent, 0, 100) . "...");
 
+            // Check if BarcodeService exists and has the conversion method
+            $serviceExists = class_exists('\App\Services\BarcodeService');
+            $methodExists = method_exists('\App\Services\BarcodeService', 'convertSvgToPngFile');
+
+            \Log::info("BarcodeService exists: " . ($serviceExists ? 'YES' : 'NO'));
+            \Log::info("Method exists: " . ($methodExists ? 'YES' : 'NO'));
+
+            if ($serviceExists && $methodExists) {
+                \Log::info("Calling BarcodeService::convertSvgToPngFile");
+                $result = BarcodeService::convertSvgToPngFile($svgContent, $trackingNumber);
+
+                \Log::info("BarcodeService result: " . ($result ? "File: {$result}" : 'NULL'));
+
+                if ($result && file_exists($result)) {
+                    \Log::info("File exists, size: " . filesize($result) . " bytes");
+                    \Log::info("=== BARCODE DEBUG END - SUCCESS ===");
+                    return $result;
+                } else {
+                    \Log::error("BarcodeService returned null or file doesn't exist");
+                }
+            }
+
+            // Fallback: Use Imagick directly if available
+            \Log::info("Trying Imagick fallback");
+
+            if (extension_loaded('imagick')) {
+                \Log::info("Imagick extension loaded");
+
+                $imagick = new \Imagick();
+                \Log::info("Imagick object created");
+
+                $imagick->readImageBlob($svgContent);
+                \Log::info("SVG blob read successfully");
+
+                $imagick->setImageFormat('png');
+                \Log::info("Format set to PNG");
+
+                $imagick->setBackgroundColor('white');
+                $imagick->setImageBackgroundColor('white');
+                \Log::info("Background set to white");
+
+                $tempFile = tempnam(sys_get_temp_dir(), 'barcode_' . $trackingNumber . '_') . '.png';
+                \Log::info("Temp file path: {$tempFile}");
+
+                $imagick->writeImage($tempFile);
+                \Log::info("Image written to temp file");
+
+                $imagick->clear();
+                \Log::info("Imagick cleared");
+
+                if (file_exists($tempFile)) {
+                    \Log::info("SUCCESS: Temp file exists, size: " . filesize($tempFile) . " bytes");
+                    \Log::info("=== BARCODE DEBUG END - SUCCESS VIA IMAGICK ===");
+                    return $tempFile;
+                } else {
+                    \Log::error("ERROR: Temp file was not created");
+                }
+            } else {
+                \Log::error("Imagick extension not loaded");
+            }
+
+            \Log::error("=== BARCODE DEBUG END - FAILED ===");
+            return null;
+
+        } catch (\Exception $e) {
+            \Log::error('Barcode SVG to PNG conversion failed: ' . $e->getMessage());
+            \Log::error('Stack trace: ' . $e->getTraceAsString());
+            \Log::error("=== BARCODE DEBUG END - EXCEPTION ===");
+            return null;
+        }
     }
 
     // Generate multiple Bills of Lading for selected shipments (Old ZIP method - kept for compatibility)

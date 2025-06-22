@@ -6,7 +6,8 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-
+use App\Services\BarcodeService;
+use Illuminate\Support\Facades\DB;
 
 class Shipment extends Model
 {
@@ -14,6 +15,7 @@ class Shipment extends Model
 
     protected $fillable = [
         'tracking_number',
+        'barcode_svg',
         'status',
         'is_existing_seller',
         'seller_id',
@@ -70,20 +72,32 @@ class Shipment extends Model
     {
         return $this->belongsTo(User::class, 'created_by');
     }
-     public function histories(): HasMany
+
+    public function histories(): HasMany
     {
         return $this->hasMany(ShipmentHistory::class)->orderByDesc('created_at');
     }
+
+    public function invoiceItem()
+{
+    return $this->hasOne(InvoiceItem::class);
+}
+
+public function driverCommissionItem()
+{
+    return $this->hasOne(InvoiceItem::class)->where('item_type', 'commission');
+}
 
     // Accessors
     public function getStatusLabelAttribute(): string
     {
         return match($this->status) {
             'pending' => 'Pending',
+            'picked_up' => 'Picked Up',
             'in_transit' => 'In Transit',
             'out_for_delivery' => 'Out for Delivery',
             'delivered' => 'Delivered',
-            'cancelled' => 'Cancelled',
+            'canceled' => 'Canceled',
             'failed_delivery' => 'Failed Delivery',
             'returned' => 'Returned',
             default => $this->status,
@@ -202,12 +216,14 @@ class Shipment extends Model
         return in_array($this->status, ['in_transit', 'out_for_delivery']);
     }
 
-    // Boot method for auto-generating tracking number
-     protected static function boot()
+    // Boot method with Barcode generation
+    protected static function boot()
     {
         parent::boot();
 
+        // Generate barcode when shipment is created
         static::created(function ($shipment) {
+            // Log shipment creation
             ShipmentHistory::log(
                 $shipment->id,
                 'created',
@@ -215,10 +231,57 @@ class Shipment extends Model
             );
         });
 
+        // Generate barcode after shipment is saved
+        static::saved(function ($shipment) {
+            if ($shipment->wasRecentlyCreated && $shipment->tracking_number && !$shipment->barcode_svg) {
+
+                try {
+                    $barcodeSvg = BarcodeService::generateBarcodeAsSvg($shipment->tracking_number);
+
+                    if ($barcodeSvg) {
+                        DB::table('shipments')
+                            ->where('id', $shipment->id)
+                            ->update(['barcode_svg' => $barcodeSvg]);
+
+                        \Log::info("Barcode generated for shipment: {$shipment->tracking_number}");
+                    }
+                } catch (\Exception $e) {
+                    \Log::error("Failed to generate barcode for shipment {$shipment->id}: " . $e->getMessage());
+                }
+            }
+        });
+
+        // Handle updates
         static::updating(function ($shipment) {
             $changes = $shipment->getDirty();
 
+            // Regenerate barcode if tracking number changes
+            if (array_key_exists('tracking_number', $changes)) {
+                $oldTrackingNumber = $shipment->getOriginal('tracking_number');
+                $newTrackingNumber = $changes['tracking_number'];
+
+                try {
+                    $barcodeSvg = BarcodeService::generateBarcodeAsSvg($newTrackingNumber);
+                    if ($barcodeSvg) {
+                        $shipment->barcode_svg = $barcodeSvg;
+                    }
+                } catch (\Exception $e) {
+                    \Log::error("Failed to regenerate barcode: " . $e->getMessage());
+                }
+
+                ShipmentHistory::log(
+                    $shipment->id,
+                    'tracking_updated',
+                    "Tracking number changed from '{$oldTrackingNumber}' to '{$newTrackingNumber}'"
+                );
+            }
+
+            // Log other changes
             foreach ($changes as $field => $newValue) {
+                if (in_array($field, ['barcode_svg', 'tracking_number'])) {
+                    continue;
+                }
+
                 $oldValue = $shipment->getOriginal($field);
 
                 if ($field === 'status') {
@@ -240,17 +303,8 @@ class Shipment extends Model
                         $oldDriver,
                         $newDriver
                     );
-                } else {
-                    ShipmentHistory::log(
-                        $shipment->id,
-                        'field_updated',
-                        "Field '{$field}' updated from '{$oldValue}' to '{$newValue}'",
-                        $oldValue,
-                        $newValue
-                    );
                 }
             }
         });
     }
-
 }

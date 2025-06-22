@@ -21,14 +21,13 @@ class ShipmentResource extends Resource
 {
     protected static ?string $model = Shipment::class;
     protected static ?string $navigationIcon = 'heroicon-o-truck';
-    protected static ?string $navigationGroup = 'Management';
+
     protected static ?int $navigationSort = 1;
 
     public static function canAccess(): bool
     {
         return auth()->user()->can('view_shipments') || auth()->user()->can('view_own_shipments');
     }
-
     public static function getEloquentQuery(): Builder
     {
         $query = parent::getEloquentQuery();
@@ -64,24 +63,49 @@ class ShipmentResource extends Resource
         ];
     }
 
-    public static function getGlobalSearchResultDetails(Model $record): array
-    {
-        $details = [];
 
-        if ($record->seller?->company_name) {
-            $details['Company'] = $record->seller->company_name;
-        }
+    // Helper method to get status-specific query for sub-pages
+public static function getEloquentQueryForStatus(string $status): Builder
+{
+    $query = static::getEloquentQuery();
 
-        if ($record->receiver_city) {
-            $details['City'] = $record->receiver_city;
-        }
-
-        if ($record->status) {
-            $details['Status'] = ucfirst(str_replace('_', ' ', $record->status));
-        }
-
-        return $details;
+    if ($status === 'in_transit') {
+        return $query->where('status', 'in_transit');
     }
+
+    if ($status === 'out_for_delivery') {
+        return $query->where('status', 'out_for_delivery');
+    }
+
+    if ($status === 'delivered') {
+        return $query->where('status', 'delivered');
+    }
+
+    if ($status === 'canceled') {
+        return $query->whereIn('status', ['canceled', 'returned']);
+    }
+
+    return $query;
+}
+
+public static function getGlobalSearchResultDetails(Model $record): array
+{
+    $details = [];
+
+    if ($record->seller?->company_name) {
+        $details['Company'] = $record->seller->company_name;
+    }
+
+    if ($record->receiver_city) {
+        $details['City'] = $record->receiver_city;
+    }
+
+    if ($record->status) {
+        $details['Status'] = ucfirst(str_replace('_', ' ', $record->status));
+    }
+
+    return $details;
+}
 
     public static function form(Form $form): Form
     {
@@ -333,6 +357,7 @@ class ShipmentResource extends Resource
                     ->copyable()
                     ->weight('medium'),
 
+
                 Tables\Columns\BadgeColumn::make('status')
                     ->formatStateUsing(fn (string $state): string => match($state) {
                         'pending' => 'Pending',
@@ -576,26 +601,26 @@ class ShipmentResource extends Resource
                     ->modalSubmitActionLabel('Import')
             ])
 
-           ->actions([
-    Tables\Actions\Action::make('printBillOfLading')
-        ->label('Print')
-        ->icon('heroicon-m-document-text')
-        ->url(fn (Shipment $record): string => route('bill-of-lading.generate', $record->id))
-        ->openUrlInNewTab()
-        ->button()
-        ->color('primary'),
+        ->actions([
+                Tables\Actions\Action::make('printBillOfLading')
+                    ->label('Print')
+                    ->icon('heroicon-m-document-text')
+                    ->url(fn (Shipment $record): string => route('bill-of-lading.generate', $record->id))
+                    ->openUrlInNewTab()
+                    ->button()
+                    ->color('primary'),
 
-    Tables\Actions\Action::make('viewHistory')
-        ->label('History')
-        ->icon('heroicon-m-clock')
-        ->color('info')
-        ->modalHeading(fn (Shipment $record) => 'History for ' . $record->tracking_number)
-        ->modalContent(fn (Shipment $record) => view('filament.modals.shipment-history', [
-            'shipment' => $record,
-            'histories' => $record->histories()->with('user')->get()
-        ]))
-        ->modalWidth('4xl')
-        ->button(),
+                Tables\Actions\Action::make('viewHistory')
+                    ->label('History')
+                    ->icon('heroicon-m-clock')
+                    ->color('info')
+                    ->modalHeading(fn (Shipment $record) => 'History for ' . $record->tracking_number)
+                    ->modalContent(fn (Shipment $record) => view('filament.modals.shipment-history', [
+                        'shipment' => $record,
+                        'histories' => $record->histories()->with('user')->get()
+                    ]))
+                    ->modalWidth('4xl')
+                    ->button(),
 
                 Tables\Actions\EditAction::make()
                     ->visible(fn () => auth()->user()->can('edit_shipments')),
@@ -604,34 +629,32 @@ class ShipmentResource extends Resource
                     ->visible(fn () => auth()->user()->can('delete_shipments')),
             ])
             ->bulkActions([
-
                 Tables\Actions\BulkAction::make('generateBills')
-    ->label('Print Shipments')
-    ->icon('heroicon-o-document-text')
-    ->color('primary')
-    ->outlined()
-    ->action(function (\Illuminate\Database\Eloquent\Collection $records) {
-        // Load relationships
-        $shipments = $records->load(['seller', 'driver']);
+                    ->label('Print Shipments')
+                    ->icon('heroicon-o-document-text')
+                    ->color('primary')
+                    ->outlined()
+                    ->action(function (\Illuminate\Database\Eloquent\Collection $records) {
+                        // Load relationships
+                        $shipments = $records->load(['seller', 'driver']);
 
-        if (count($shipments) === 1) {
-            // Single shipment - generate and download directly
-            return response()->streamDownload(function () use ($shipments) {
-                $shipment = $shipments->first();
-                $billContent = \App\Http\Controllers\BillOfLadingController::generateBillContent($shipment);
-                echo $billContent;
-            }, 'Bill_of_Lading_' . $shipments->first()->tracking_number . '_' . now()->format('Y-m-d') . '.docx');
-        } else {
-            // Multiple shipments - create ONE Word document with all bills
-            return response()->streamDownload(function () use ($shipments) {
-                $billContent = \App\Http\Controllers\BillOfLadingController::generateMultipleBillsContent($shipments);
-                echo $billContent;
-            }, 'Bills_of_Lading_' . count($shipments) . '_shipments_' . now()->format('Y-m-d_H-i-s') . '.docx');
-        }
-    })
-    ->requiresConfirmation()
-    ->deselectRecordsAfterCompletion(),
-
+                        if (count($shipments) === 1) {
+                            // Single shipment - generate and download directly
+                            return response()->streamDownload(function () use ($shipments) {
+                                $shipment = $shipments->first();
+                                $billContent = \App\Http\Controllers\BillOfLadingController::generateBillContent($shipment);
+                                echo $billContent;
+                            }, 'Bill_of_Lading_' . $shipments->first()->tracking_number . '_' . now()->format('Y-m-d') . '.docx');
+                        } else {
+                            // Multiple shipments - create ONE Word document with all bills
+                            return response()->streamDownload(function () use ($shipments) {
+                                $billContent = \App\Http\Controllers\BillOfLadingController::generateMultipleBillsContent($shipments);
+                                echo $billContent;
+                            }, 'Bills_of_Lading_' . count($shipments) . '_shipments_' . now()->format('Y-m-d_H-i-s') . '.docx');
+                        }
+                    })
+                    ->requiresConfirmation()
+                    ->deselectRecordsAfterCompletion(),
 
                 // Export Selected - Side by side
                 Tables\Actions\BulkAction::make('exportSelected')
@@ -655,6 +678,7 @@ class ShipmentResource extends Resource
                 Tables\Actions\DeleteBulkAction::make()
                     ->outlined()
                     ->visible(fn () => auth()->user()?->can('delete_shipments') ?? false),
+
                 // Assign Driver - Side by side
                 Tables\Actions\BulkAction::make('assignDriver')
                     ->label('Assign Driver')
@@ -673,20 +697,20 @@ class ShipmentResource extends Resource
                             ->required()
                             ->placeholder('Choose a driver'),
                     ])
-                ->action(function (array $data, $records) {
-                    $records->each(function ($record) use ($data) {
-                        $record->update([
-                            'driver_id' => $data['driver_id'],
-                            'status' => 'out_for_delivery' // Automatically set to "Out for Delivery"
-                        ]);
-                    });
+                    ->action(function (array $data, $records) {
+                        $records->each(function ($record) use ($data) {
+                            $record->update([
+                                'driver_id' => $data['driver_id'],
+                                'status' => 'out_for_delivery' // Automatically set to "Out for Delivery"
+                            ]);
+                        });
 
-                    \Filament\Notifications\Notification::make()
-                        ->title('Shipments Assigned Successfully')
-                        ->body(count($records) . ' shipments have been assigned to the selected driver.')
-                        ->success()
-                        ->send();
-                })
+                        \Filament\Notifications\Notification::make()
+                            ->title('Shipments Assigned Successfully')
+                            ->body(count($records) . ' shipments have been assigned to the selected driver.')
+                            ->success()
+                            ->send();
+                    })
                     ->visible(fn () => auth()->user()?->can('assign_shipments') ?? false)
                     ->requiresConfirmation()
                     ->modalHeading('Assign Shipments to Driver')
@@ -754,13 +778,54 @@ class ShipmentResource extends Resource
             ])
             ->defaultSort('created_at', 'desc');
     }
+    public static function getNavigationItems(): array
+{
+    return [
+        // Main shipments page
+        \Filament\Navigation\NavigationItem::make('All Shipments')
+            ->icon(static::getNavigationIcon())
+            ->url(static::getUrl('index'))
+            ->badge(static::getNavigationBadge())
+            ->isActiveWhen(fn (): bool => request()->routeIs('filament.admin.resources.shipments.index')),
 
+        // Sub-pages for different statuses
+        \Filament\Navigation\NavigationItem::make('In House')
+            ->icon('heroicon-o-building-storefront')
+            ->url(static::getUrl('in-house'))
+            ->badge(fn () => static::getModel()::where('status', 'in_transit')->count() ?: null)
+            ->isActiveWhen(fn (): bool => request()->routeIs('filament.admin.resources.shipments.in-house')),
+
+        \Filament\Navigation\NavigationItem::make('Out for Delivery')
+            ->icon('heroicon-o-truck')
+            ->url(static::getUrl('out-for-delivery'))
+            ->badge(fn () => static::getModel()::where('status', 'out_for_delivery')->count() ?: null)
+            ->isActiveWhen(fn (): bool => request()->routeIs('filament.admin.resources.shipments.out-for-delivery')),
+
+        \Filament\Navigation\NavigationItem::make('Delivered')
+            ->icon('heroicon-o-check-circle')
+            ->url(static::getUrl('delivered'))
+            ->badge(fn () => static::getModel()::where('status', 'delivered')->count() ?: null)
+            ->isActiveWhen(fn (): bool => request()->routeIs('filament.admin.resources.shipments.delivered')),
+
+        \Filament\Navigation\NavigationItem::make('Canceled')
+            ->icon('heroicon-o-x-circle')
+            ->url(static::getUrl('canceled'))
+            ->badge(fn () => static::getModel()::whereIn('status', ['canceled', 'returned'])->count() ?: null)
+            ->isActiveWhen(fn (): bool => request()->routeIs('filament.admin.resources.shipments.canceled')),
+    ];
+}
     public static function getPages(): array
     {
         return [
             'index' => Pages\ListShipments::route('/'),
             'create' => Pages\CreateShipment::route('/create'),
             'edit' => Pages\EditShipment::route('/{record}/edit'),
+
+            // New status-based pages
+            'in-house' => Pages\InHouseShipments::route('/in-house'),
+            'out-for-delivery' => Pages\OutForDeliveryShipments::route('/out-for-delivery'),
+            'delivered' => Pages\DeliveredShipments::route('/delivered'),
+            'canceled' => Pages\CanceledShipments::route('/canceled'),
         ];
     }
 
@@ -777,3 +842,5 @@ class ShipmentResource extends Resource
         return static::getModel()::where('status', 'pending')->count();
     }
 }
+
+
