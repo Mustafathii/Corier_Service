@@ -223,6 +223,16 @@ class User extends Authenticatable
             ->get();
     }
 
+    public function customerInvoices()
+{
+    return $this->hasMany(Invoice::class, 'customer_id');
+}
+
+public function driverCommissions()
+{
+    return $this->hasMany(Invoice::class, 'driver_id');
+}
+
     /**
      * Get COD amount to collect for driver
      */

@@ -1,0 +1,15 @@
+[90m= [39m[34;4mApp\Models\User[39;24m {#7108
+    [34mid[39m: [35m11[39m,
+    [34mname[39m: "[32mashraf[39m",
+    [34memail[39m: "[32mlol@admin.com[39m",
+    [34memail_verified_at[39m: [36mnull[39m,
+    #[33mpassword[39m: "[32m$2y$12$c/UpRgcjgnj8j9T63JNbueNTWKIz4DeS3Iwn9gUQnWi5qb/fmda06[39m",
+    #[33mremember_token[39m: [36mnull[39m,
+    [34mcreated_at[39m: "[32m2025-06-08 03:38:39[39m",
+    [34mupdated_at[39m: "[32m2025-06-08 03:38:39[39m",
+    [34mdriver_id[39m: [36mnull[39m,
+    [34mcompany_name[39m: "[32mlolo store[39m",
+    [34mphone[39m: "[32m01142242628[39m",
+    [34mis_active[39m: [35m1[39m,
+  }
+

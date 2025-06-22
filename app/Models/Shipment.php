@@ -5,6 +5,9 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use App\Services\BarcodeService;
+use Illuminate\Support\Facades\DB;
 
 class Shipment extends Model
 {
@@ -12,6 +15,7 @@ class Shipment extends Model
 
     protected $fillable = [
         'tracking_number',
+        'barcode_svg',
         'status',
         'is_existing_seller',
         'seller_id',
@@ -69,15 +73,31 @@ class Shipment extends Model
         return $this->belongsTo(User::class, 'created_by');
     }
 
+    public function histories(): HasMany
+    {
+        return $this->hasMany(ShipmentHistory::class)->orderByDesc('created_at');
+    }
+
+    public function invoiceItem()
+{
+    return $this->hasOne(InvoiceItem::class);
+}
+
+public function driverCommissionItem()
+{
+    return $this->hasOne(InvoiceItem::class)->where('item_type', 'commission');
+}
+
     // Accessors
     public function getStatusLabelAttribute(): string
     {
         return match($this->status) {
             'pending' => 'Pending',
+            'picked_up' => 'Picked Up',
             'in_transit' => 'In Transit',
             'out_for_delivery' => 'Out for Delivery',
             'delivered' => 'Delivered',
-            'cancelled' => 'Cancelled',
+            'canceled' => 'Canceled',
             'failed_delivery' => 'Failed Delivery',
             'returned' => 'Returned',
             default => $this->status,
@@ -196,29 +216,94 @@ class Shipment extends Model
         return in_array($this->status, ['in_transit', 'out_for_delivery']);
     }
 
-    // Boot method for auto-generating tracking number
+    // Boot method with Barcode generation
     protected static function boot()
     {
         parent::boot();
 
-        static::creating(function ($shipment) {
-            if (empty($shipment->tracking_number)) {
-                $shipment->tracking_number = 'TRK' . strtoupper(\Illuminate\Support\Str::random(10));
-            }
+        // Generate barcode when shipment is created
+        static::created(function ($shipment) {
+            // Log shipment creation
+            ShipmentHistory::log(
+                $shipment->id,
+                'created',
+                'Shipment created with tracking number: ' . $shipment->tracking_number
+            );
+        });
 
-            // If using existing seller, populate sender fields from seller data
-            if ($shipment->is_existing_seller && $shipment->seller_id) {
-                $seller = User::find($shipment->seller_id);
-                if ($seller) {
-                    $shipment->sender_name = $seller->name;
-                    $shipment->sender_phone = $seller->phone ?? 'N/A';
-                    $shipment->sender_address = $seller->address ?? 'N/A';
-                    $shipment->sender_city = 'N/A'; // You might want to add city to users table
+        // Generate barcode after shipment is saved
+        static::saved(function ($shipment) {
+            if ($shipment->wasRecentlyCreated && $shipment->tracking_number && !$shipment->barcode_svg) {
+
+                try {
+                    $barcodeSvg = BarcodeService::generateBarcodeAsSvg($shipment->tracking_number);
+
+                    if ($barcodeSvg) {
+                        DB::table('shipments')
+                            ->where('id', $shipment->id)
+                            ->update(['barcode_svg' => $barcodeSvg]);
+
+                        \Log::info("Barcode generated for shipment: {$shipment->tracking_number}");
+                    }
+                } catch (\Exception $e) {
+                    \Log::error("Failed to generate barcode for shipment {$shipment->id}: " . $e->getMessage());
                 }
             }
+        });
 
-            if (auth()->check()) {
-                $shipment->created_by = auth()->id();
+        // Handle updates
+        static::updating(function ($shipment) {
+            $changes = $shipment->getDirty();
+
+            // Regenerate barcode if tracking number changes
+            if (array_key_exists('tracking_number', $changes)) {
+                $oldTrackingNumber = $shipment->getOriginal('tracking_number');
+                $newTrackingNumber = $changes['tracking_number'];
+
+                try {
+                    $barcodeSvg = BarcodeService::generateBarcodeAsSvg($newTrackingNumber);
+                    if ($barcodeSvg) {
+                        $shipment->barcode_svg = $barcodeSvg;
+                    }
+                } catch (\Exception $e) {
+                    \Log::error("Failed to regenerate barcode: " . $e->getMessage());
+                }
+
+                ShipmentHistory::log(
+                    $shipment->id,
+                    'tracking_updated',
+                    "Tracking number changed from '{$oldTrackingNumber}' to '{$newTrackingNumber}'"
+                );
+            }
+
+            // Log other changes
+            foreach ($changes as $field => $newValue) {
+                if (in_array($field, ['barcode_svg', 'tracking_number'])) {
+                    continue;
+                }
+
+                $oldValue = $shipment->getOriginal($field);
+
+                if ($field === 'status') {
+                    ShipmentHistory::log(
+                        $shipment->id,
+                        'status_changed',
+                        "Status changed from '{$oldValue}' to '{$newValue}'",
+                        $oldValue,
+                        $newValue
+                    );
+                } elseif ($field === 'driver_id') {
+                    $oldDriver = $oldValue ? User::find($oldValue)?->name : 'Unassigned';
+                    $newDriver = $newValue ? User::find($newValue)?->name : 'Unassigned';
+
+                    ShipmentHistory::log(
+                        $shipment->id,
+                        'driver_assigned',
+                        "Driver changed from '{$oldDriver}' to '{$newDriver}'",
+                        $oldDriver,
+                        $newDriver
+                    );
+                }
             }
         });
     }
