@@ -35,6 +35,9 @@ class Shipment extends Model
         'expected_delivery_date',
         'actual_delivery_date',
         'shipment_type',
+        'governorate_id',
+        'city_id',
+        'zone_id',
         'quantity',
         'payment_method',
         'shipping_cost',
@@ -77,16 +80,6 @@ class Shipment extends Model
     {
         return $this->hasMany(ShipmentHistory::class)->orderByDesc('created_at');
     }
-
-    public function invoiceItem()
-{
-    return $this->hasOne(InvoiceItem::class);
-}
-
-public function driverCommissionItem()
-{
-    return $this->hasOne(InvoiceItem::class)->where('item_type', 'commission');
-}
 
     // Accessors
     public function getStatusLabelAttribute(): string
@@ -216,95 +209,109 @@ public function driverCommissionItem()
         return in_array($this->status, ['in_transit', 'out_for_delivery']);
     }
 
-    // Boot method with Barcode generation
-    protected static function boot()
-    {
-        parent::boot();
+    public function governorate()
+{
+    return $this->belongsTo(\App\Models\Governorate::class);
+}
 
-        // Generate barcode when shipment is created
-        static::created(function ($shipment) {
-            // Log shipment creation
-            ShipmentHistory::log(
-                $shipment->id,
-                'created',
-                'Shipment created with tracking number: ' . $shipment->tracking_number
-            );
-        });
+public function city()
+{
+    return $this->belongsTo(\App\Models\City::class);
+}
 
-        // Generate barcode after shipment is saved
-        static::saved(function ($shipment) {
-            if ($shipment->wasRecentlyCreated && $shipment->tracking_number && !$shipment->barcode_svg) {
+public function zone()
+{
+    return $this->belongsTo(\App\Models\Zone::class);
+}
 
-                try {
-                    $barcodeSvg = BarcodeService::generateBarcodeAsSvg($shipment->tracking_number);
+// إضافة Accessors:
+public function getFullLocationAttribute()
+{
+    $parts = [];
 
-                    if ($barcodeSvg) {
-                        DB::table('shipments')
-                            ->where('id', $shipment->id)
-                            ->update(['barcode_svg' => $barcodeSvg]);
-
-                        \Log::info("Barcode generated for shipment: {$shipment->tracking_number}");
-                    }
-                } catch (\Exception $e) {
-                    \Log::error("Failed to generate barcode for shipment {$shipment->id}: " . $e->getMessage());
-                }
-            }
-        });
-
-        // Handle updates
-        static::updating(function ($shipment) {
-            $changes = $shipment->getDirty();
-
-            // Regenerate barcode if tracking number changes
-            if (array_key_exists('tracking_number', $changes)) {
-                $oldTrackingNumber = $shipment->getOriginal('tracking_number');
-                $newTrackingNumber = $changes['tracking_number'];
-
-                try {
-                    $barcodeSvg = BarcodeService::generateBarcodeAsSvg($newTrackingNumber);
-                    if ($barcodeSvg) {
-                        $shipment->barcode_svg = $barcodeSvg;
-                    }
-                } catch (\Exception $e) {
-                    \Log::error("Failed to regenerate barcode: " . $e->getMessage());
-                }
-
-                ShipmentHistory::log(
-                    $shipment->id,
-                    'tracking_updated',
-                    "Tracking number changed from '{$oldTrackingNumber}' to '{$newTrackingNumber}'"
-                );
-            }
-
-            // Log other changes
-            foreach ($changes as $field => $newValue) {
-                if (in_array($field, ['barcode_svg', 'tracking_number'])) {
-                    continue;
-                }
-
-                $oldValue = $shipment->getOriginal($field);
-
-                if ($field === 'status') {
-                    ShipmentHistory::log(
-                        $shipment->id,
-                        'status_changed',
-                        "Status changed from '{$oldValue}' to '{$newValue}'",
-                        $oldValue,
-                        $newValue
-                    );
-                } elseif ($field === 'driver_id') {
-                    $oldDriver = $oldValue ? User::find($oldValue)?->name : 'Unassigned';
-                    $newDriver = $newValue ? User::find($newValue)?->name : 'Unassigned';
-
-                    ShipmentHistory::log(
-                        $shipment->id,
-                        'driver_assigned',
-                        "Driver changed from '{$oldDriver}' to '{$newDriver}'",
-                        $oldDriver,
-                        $newDriver
-                    );
-                }
-            }
-        });
+    if ($this->city) {
+        $parts[] = $this->city->city_name_en;
+    } elseif ($this->receiver_city) {
+        $parts[] = $this->receiver_city;
     }
+
+    if ($this->governorate) {
+        $parts[] = $this->governorate->governorate_name_en;
+    }
+
+    return implode(', ', $parts) ?: 'Not specified';
+}
+
+public function getLocationDisplayAttribute()
+{
+    if ($this->zone) {
+        return $this->zone->zone_name . ' (' . $this->governorate->governorate_name_en . ')';
+    }
+
+    return $this->full_location;
+}
+
+
+    // Boot method with Barcode generation
+   protected static function boot()
+{
+    parent::boot();
+
+    static::saving(function ($shipment) {
+        // Auto-update receiver_city when city is selected
+        if ($shipment->isDirty('city_id') && $shipment->city_id) {
+            $city = \App\Models\City::find($shipment->city_id);
+            if ($city && empty($shipment->receiver_city)) {
+                $shipment->receiver_city = $city->city_name_en;
+            }
+        }
+
+        // Auto-update shipping cost when zone changes
+        if ($shipment->isDirty('zone_id') && $shipment->zone_id && !$shipment->isDirty('shipping_cost')) {
+            $zone = \App\Models\Zone::find($shipment->zone_id);
+            if ($zone) {
+                $shipment->shipping_cost = $zone->getCostByType($shipment->shipment_type ?? 'standard');
+            }
+        }
+
+        // Auto-update shipping cost when shipment type changes
+        if ($shipment->isDirty('shipment_type') && $shipment->zone_id && !$shipment->isDirty('shipping_cost')) {
+            $zone = \App\Models\Zone::find($shipment->zone_id);
+            if ($zone) {
+                $shipment->shipping_cost = $zone->getCostByType($shipment->shipment_type);
+            }
+        }
+
+        // Auto-update expected delivery date
+        if (($shipment->isDirty('zone_id') || $shipment->isDirty('shipment_type'))
+            && $shipment->zone_id
+            && !$shipment->isDirty('expected_delivery_date')) {
+            $zone = \App\Models\Zone::find($shipment->zone_id);
+            if ($zone) {
+                $shipment->expected_delivery_date = now()->addDays($zone->estimated_delivery_days)->format('Y-m-d');
+            }
+        }
+    });
+}
+
+// إضافة Scopes مفيدة:
+public function scopeByGovernorate($query, $governorateId)
+{
+    return $query->where('governorate_id', $governorateId);
+}
+
+public function scopeByCity($query, $cityId)
+{
+    return $query->where('city_id', $cityId);
+}
+
+public function scopeByZone($query, $zoneId)
+{
+    return $query->where('zone_id', $zoneId);
+}
+
+public function scopeWithLocation($query)
+{
+    return $query->with(['governorate', 'city', 'zone']);
+}
 }

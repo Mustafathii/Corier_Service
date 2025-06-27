@@ -25,6 +25,8 @@ class AdminPanelProvider extends PanelProvider
     {
         return $panel
             ->default()
+            ->brandLogo(asset('images/logo.png'))
+            ->brandLogoHeight('4rem')
             ->id('admin')
             ->path('admin')
             ->login()
@@ -41,12 +43,8 @@ class AdminPanelProvider extends PanelProvider
                 // Add your custom widgets here
                 \App\Filament\Widgets\StatsOverview::class,
                 \App\Filament\Widgets\DriverPerformanceWidget::class,
-                \App\Filament\Widgets\RevenueAnalyticsWidget::class,
                 \App\Filament\Widgets\CityDistributionWidget::class,
-                // Widgets\AccountWidget::class, // Comment out or remove default widgets if not needed
-                // Widgets\FilamentInfoWidget::class,
             ])
-
             ->middleware([
                 EncryptCookies::class,
                 AddQueuedCookiesToResponse::class,
@@ -62,14 +60,14 @@ class AdminPanelProvider extends PanelProvider
                 Authenticate::class,
             ])
             ->navigationGroups([
-            'Shipments Management',
-            'Users Management'
+                'Shipments Management',
+                'Users Management'
             ])
             ->routes(function () {
-            Route::post('/check-tracking', [
-                \App\Filament\Pages\BulkScannerAssignment::class,
-                'checkTrackingNumber'
-            ])->name('scanner.check-tracking');
-        });
+                Route::post('/check-tracking', [
+                    \App\Filament\Pages\BulkScannerAssignment::class,
+                    'checkTrackingNumber'
+                ])->name('scanner.check-tracking');
+            });
     }
 }

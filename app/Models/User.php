@@ -36,6 +36,28 @@ class User extends Authenticatable
         'is_active' => 'boolean',
     ];
 
+    /**
+     * ✅ Override method to check if user is active during authentication
+     */
+    public function validateForPassportPasswordGrant($password)
+    {
+        // Check if user is active before validating password
+        if (!$this->is_active) {
+            return false;
+        }
+
+        return $this->validatePassword($password);
+    }
+
+    /**
+     * ✅ Override method for standard authentication
+     */
+    public function getAuthPassword()
+    {
+        // Return password only if user is active
+        return $this->is_active ? $this->password : null;
+    }
+
     // Relationships
 
     /**
@@ -224,14 +246,14 @@ class User extends Authenticatable
     }
 
     public function customerInvoices()
-{
-    return $this->hasMany(Invoice::class, 'customer_id');
-}
+    {
+        return $this->hasMany(Invoice::class, 'customer_id');
+    }
 
-public function driverCommissions()
-{
-    return $this->hasMany(Invoice::class, 'driver_id');
-}
+    public function driverCommissions()
+    {
+        return $this->hasMany(Invoice::class, 'driver_id');
+    }
 
     /**
      * Get COD amount to collect for driver
